@@ -1,0 +1,7 @@
+build/
+*.exe
+*.o
+*.a
+*.out
+.rex/
+*.tmp

@@ -1,0 +1,12 @@
+#pragma once
+/*
+ * rexc_iostream  –  Compatibility header mapping std::cout/cin/cerr to rexc_rt
+ */
+#include "../runtime/rexc_io.hpp"
+
+namespace std {
+    inline rexc_rt::OStream& cout = rexc_rt::cout;
+    inline rexc_rt::OStream& cerr = rexc_rt::cerr;
+    inline rexc_rt::IStream& cin  = rexc_rt::cin;
+    inline rexc_rt::EndlTag& endl = rexc_rt::endl;
+}

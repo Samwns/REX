@@ -1,0 +1,13 @@
+#pragma once
+/*
+ * rexc_map  –  Compatibility header mapping std::map and std::pair to rexc_rt
+ */
+#include "../runtime/rexc_containers.hpp"
+
+namespace std {
+    template <typename K, typename V>
+    using map = rexc_rt::rexc_map<K, V>;
+
+    template <typename A, typename B>
+    using pair = rexc_rt::rexc_pair<A, B>;
+}

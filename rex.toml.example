@@ -1,0 +1,14 @@
+[project]
+name    = "my_project"
+version = "0.1.0"
+std     = "c++20"       # c++11, c++14, c++17, c++20, c++23
+entry   = "src/main.cpp"
+output  = "build/my_project"
+# target  = "aarch64-linux-gnu"   # cross-compilation target (run 'rex targets')
+
+[build]
+flags = ["-O2", "-Wall"]
+
+[dependencies]
+# nlohmann-json = "latest"
+# stb           = "latest"

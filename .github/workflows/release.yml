@@ -1,0 +1,362 @@
+name: Build & Release REX
+
+on:
+  push:
+    branches: [main]    # Auto-release on every push to main
+    tags:
+      - "v*"            # Also trigger on manual version tags
+  workflow_dispatch:     # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────
+  #  Check Version — auto-bumps patch version
+  #  when the tag already exists (bug-fix builds).
+  # ─────────────────────────────────────────────
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.version.outputs.skip }}
+      ref: ${{ steps.version.outputs.ref }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version tag
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(grep -oP 'REX_VERSION\s*=\s*"v?\K[^"]+' src/main.cpp || true)
+            if [ -z "$VERSION" ]; then
+              echo "::error::Could not extract version from src/main.cpp. Expected: REX_VERSION = \"vX.Y.Z\""
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            TAG="v${VERSION}"
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "Tag ${TAG} already exists — auto-bumping patch version..."
+
+              # Parse version components (supports MAJOR.MINOR or MAJOR.MINOR.PATCH)
+              MAJOR=$(echo "$VERSION" | cut -d. -f1)
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+              if [ -z "$PATCH" ]; then
+                PATCH=1
+              else
+                PATCH=$((PATCH + 1))
+              fi
+
+              NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              NEW_TAG="v${NEW_VERSION}"
+
+              # Keep incrementing if that tag also exists
+              while git rev-parse "refs/tags/${NEW_TAG}" >/dev/null 2>&1; do
+                PATCH=$((PATCH + 1))
+                NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+                NEW_TAG="v${NEW_VERSION}"
+              done
+
+              echo "New version: v${NEW_VERSION} (tag: ${NEW_TAG})"
+
+              # Update version in src/main.cpp
+              sed -i "s/REX_VERSION = \"[^\"]*\"/REX_VERSION = \"v${NEW_VERSION}\"/" src/main.cpp
+
+              # Commit and push the version bump
+              git add src/main.cpp
+              git commit -m "Bump version to v${NEW_VERSION} [skip ci]"
+              git push --force-with-lease origin HEAD:${{ github.ref_name }}
+
+              # Create and push the new tag
+              git tag "${NEW_TAG}"
+              git push origin "${NEW_TAG}"
+
+              echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            else
+              echo "Creating tag ${TAG} ..."
+              git tag "${TAG}"
+              git push origin "${TAG}"
+              echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  # ─────────────────────────────────────────────
+  #  Linux Build
+  # ─────────────────────────────────────────────
+  build-linux:
+    name: Build — Linux (x86_64)
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.skip != 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.ref }}
+
+      - name: Install g++
+        run: sudo apt-get install -y g++
+
+      - name: Build
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+          mkdir -p build
+          g++ src/main.cpp src/interpreter/interpreter.cpp src/interpreter/builtins.cpp \
+            -I src \
+            -o "build/rex-${TAG}-linux-x86_64" \
+            -std=c++20 \
+            -O2 \
+            -Wall \
+            -Wno-reorder \
+            -Wno-unused-variable \
+            -Wno-unused-but-set-variable \
+            -Wno-misleading-indentation \
+            -static-libgcc \
+            -static-libstdc++
+
+      - name: Test rexc compiler
+        run: |
+          g++ src/rexc/test_rexc.cpp -o build/test_rexc \
+            -std=c++20 -O2 -I src/rexc \
+            -Wno-reorder -Wno-unused-variable \
+            -Wno-unused-but-set-variable -Wno-misleading-indentation
+          ./build/test_rexc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rex-${{ needs.check-version.outputs.tag }}-linux-x86_64
+          path: build/rex-${{ needs.check-version.outputs.tag }}-linux-x86_64
+
+  # ─────────────────────────────────────────────
+  #  macOS Build
+  # ─────────────────────────────────────────────
+  build-macos:
+    name: Build — macOS (arm64 + x86_64)
+    runs-on: macos-latest
+    needs: check-version
+    if: needs.check-version.outputs.skip != 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.ref }}
+
+      - name: Build (arm64)
+        run: |
+          mkdir -p build
+          clang++ src/main.cpp src/interpreter/interpreter.cpp src/interpreter/builtins.cpp \
+            -I src \
+            -o build/rex-macos-arm64 \
+            -std=c++20 \
+            -O2 \
+            -Wall \
+            -Wno-reorder \
+            -Wno-unused-variable \
+            -Wno-unused-but-set-variable \
+            -target arm64-apple-macos11
+
+      - name: Build (x86_64)
+        run: |
+          clang++ src/main.cpp src/interpreter/interpreter.cpp src/interpreter/builtins.cpp \
+            -I src \
+            -o build/rex-macos-x86_64 \
+            -std=c++20 \
+            -O2 \
+            -Wall \
+            -Wno-reorder \
+            -Wno-unused-variable \
+            -Wno-unused-but-set-variable \
+            -target x86_64-apple-macos10.15
+
+      - name: Create Universal Binary
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+          lipo -create \
+            build/rex-macos-arm64 \
+            build/rex-macos-x86_64 \
+            -output "build/rex-${TAG}-macos-universal"
+
+      - name: Test rexc compiler
+        run: |
+          clang++ src/rexc/test_rexc.cpp -o build/test_rexc \
+            -std=c++20 -O2 -I src/rexc \
+            -Wno-reorder -Wno-unused-variable \
+            -Wno-unused-but-set-variable
+          ./build/test_rexc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rex-${{ needs.check-version.outputs.tag }}-macos-universal
+          path: build/rex-${{ needs.check-version.outputs.tag }}-macos-universal
+
+  # ─────────────────────────────────────────────
+  #  Windows Build
+  # ─────────────────────────────────────────────
+  build-windows:
+    name: Build — Windows (x86_64)
+    runs-on: windows-latest
+    needs: check-version
+    if: needs.check-version.outputs.skip != 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.ref }}
+
+      - name: Setup MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+          mkdir -p build
+          g++ src/main.cpp src/interpreter/interpreter.cpp src/interpreter/builtins.cpp \
+            -I src \
+            -o "build/rex-${TAG}-windows-x86_64.exe" \
+            -std=c++20 \
+            -O2 \
+            -Wall \
+            -Wno-reorder \
+            -Wno-unused-variable \
+            -Wno-unused-but-set-variable \
+            -Wno-misleading-indentation \
+            -static \
+            -luser32 \
+            -ladvapi32
+
+      - name: Test rexc compiler
+        shell: msys2 {0}
+        run: |
+          g++ src/rexc/test_rexc.cpp -o build/test_rexc.exe \
+            -std=c++20 -O2 -I src/rexc \
+            -Wno-reorder -Wno-unused-variable \
+            -Wno-unused-but-set-variable -Wno-misleading-indentation
+          ./build/test_rexc.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rex-${{ needs.check-version.outputs.tag }}-windows-x86_64
+          path: build/rex-${{ needs.check-version.outputs.tag }}-windows-x86_64.exe
+
+  # ─────────────────────────────────────────────
+  #  Create GitHub Release
+  # ─────────────────────────────────────────────
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [check-version, build-linux, build-macos, build-windows]
+    if: needs.check-version.outputs.skip != 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-version.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+          # Find the previous tag (the most recent tag before this one)
+          PREV_TAG=$(git tag --sort=-version:refname | grep -Fxv "${TAG}" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log --pretty=format:"- **%s** (%h) — _%an_" "${PREV_TAG}..${TAG}" --no-merges 2>/dev/null || true)
+          fi
+          if [ -z "$LOG" ]; then
+            LOG=$(git log --pretty=format:"- **%s** (%h) — _%an_" "${TAG}" -10 --no-merges 2>/dev/null || true)
+          fi
+          {
+            echo "log<<CHANGELOG_EOF"
+            echo "$LOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: List files
+        run: find dist/ -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-version.outputs.tag }}
+          name: "REX ${{ needs.check-version.outputs.tag }}"
+          body: |
+            ## REX ${{ needs.check-version.outputs.tag }} — Compile. Run. Execute.
+
+            Now powered by **rexc**, REX's own built-in C++ → C transpiler compiler.
+            Each release binary is a **full installer** — just download and run it.
+
+            ### Download for your platform:
+
+            | Platform | File | How to install |
+            |---|---|---|
+            | 🐧 Linux (x86_64) | `rex-${{ needs.check-version.outputs.tag }}-linux-x86_64` | `chmod +x rex-*-linux-x86_64 && ./rex-*-linux-x86_64 install` |
+            | 🍎 macOS (Universal) | `rex-${{ needs.check-version.outputs.tag }}-macos-universal` | `chmod +x rex-*-macos-universal && ./rex-*-macos-universal install` |
+            | 🪟 Windows (x86_64) | `rex-${{ needs.check-version.outputs.tag }}-windows-x86_64.exe` | Double-click or run `rex-${{ needs.check-version.outputs.tag }}-windows-x86_64.exe install` |
+
+            ### Changelog
+
+            ${{ steps.changelog.outputs.log }}
+
+            ### What the installer does
+
+            1. Shows the REX banner and version
+            2. Detects your OS, architecture, and distro (Linux)
+            3. Displays the MIT license for acceptance
+            4. Locates the binary and checks permissions
+            5. Detects C compiler backend (for rexc)
+            6. Installs to `/usr/local/bin/rex` (Linux/macOS) or `C:\REX\rex.exe` (Windows)
+            7. Creates the `~/.rex/libs/` package directory
+            8. Configures PATH (Windows)
+            9. Verifies the installation
+
+            Supports: **Ubuntu**, **Debian**, **Arch**, **Fedora**, **RHEL**, **SUSE**, **macOS**, **Windows**
+
+            ### Update
+
+            Just download the new release and run the installer again — it detects
+            the existing installation and updates it automatically.
+
+            ---
+            Built automatically from source via GitHub Actions.
+          files: |
+            dist/rex-${{ needs.check-version.outputs.tag }}-linux-x86_64/rex-${{ needs.check-version.outputs.tag }}-linux-x86_64
+            dist/rex-${{ needs.check-version.outputs.tag }}-macos-universal/rex-${{ needs.check-version.outputs.tag }}-macos-universal
+            dist/rex-${{ needs.check-version.outputs.tag }}-windows-x86_64/rex-${{ needs.check-version.outputs.tag }}-windows-x86_64.exe
+          draft: false
+          prerelease: false

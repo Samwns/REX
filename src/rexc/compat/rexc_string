@@ -1,0 +1,9 @@
+#pragma once
+/*
+ * rexc_string  –  Compatibility header mapping std::string to rexc_rt::rexc_string
+ */
+#include "../runtime/rexc_string.hpp"
+
+namespace std {
+    using string = rexc_rt::rexc_string;
+}
