@@ -25,7 +25,7 @@ namespace fs = std::filesystem;
 using rex_i18n::msg;
 
 // ─── Version ──────────────────────────────────────────────────
-static const std::string REX_VERSION = "v1.0.32";
+static const std::string REX_VERSION = "v1.0.33";
 
 // ─── Supported C++ standards ──────────────────────────────────
 static const std::string DEFAULT_CPP_STD = "c++20";
